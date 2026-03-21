@@ -71,6 +71,43 @@ router.post('/', async (req, res) => {
   }
 });
 
+router.post('/simulate', async (req, res) => {
+  const io = req.app.get('io');
+  try {
+    const dummyReports = [
+      { raw_input: "Massive earthquake damage, thousands trapped. Need medical and rescue teams instantly!!", loc: { lat: 21.0, lng: 78.5 } },
+      { raw_input: "Heavy floods washed away houses. At least 50 families needing food and shelter.", loc: { lat: 19.5, lng: 77.2 } },
+      { raw_input: "Fire spreading rapidly in sector 4. Medical supplies running out.", loc: { lat: 22.8, lng: 79.1 } },
+      { raw_input: "Building collapse. Multiple casualties. Need urgent rescue and medical.", loc: { lat: 20.1, lng: 79.9 } }
+    ];
+
+    const createdTasks = [];
+
+    for (let data of dummyReports) {
+      const { processed_type, urgency_score } = simulateAI(data.raw_input);
+      const report = new Report({ raw_input: data.raw_input, processed_type, urgency_score, location: data.loc });
+      await report.save();
+
+      const task = new Task({
+        title: `CRITICAL: ${processed_type.toUpperCase()} CRISIS`,
+        type: processed_type,
+        priority: urgency_score > 90 ? urgency_score : urgency_score + 20, // ensure they are critical
+        location: data.loc,
+        status: 'pending'
+      });
+      await task.save();
+
+      io.emit('new_report', report);
+      io.emit('new_task', task);
+      createdTasks.push(task);
+    }
+
+    res.status(201).json({ message: 'Simulation triggered', tasks: createdTasks });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/', async (req, res) => {
   try {
     const reports = await Report.find().sort({ createdAt: -1 });

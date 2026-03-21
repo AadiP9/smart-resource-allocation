@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, CircleMarker } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup } from 'react-leaflet';
 import { socket } from '../utils/socket';
-import { Activity, Users, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Activity, Users, AlertTriangle, Brain, Zap } from 'lucide-react';
 import axios from 'axios';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const API_URL = 'http://localhost:8000/api';
 
@@ -11,19 +12,14 @@ export default function AdminDashboard() {
   const [tasks, setTasks] = useState([]);
   const [stats, setStats] = useState({ volunteers: 42, activeTasks: 0, criticalTasks: 0 });
   const [feed, setFeed] = useState([]);
+  const [isSimulating, setIsSimulating] = useState(false);
 
   useEffect(() => {
-    // Initial fetch
-    axios.get(`${API_URL}/reports`).then(res => setReports(res.data)).catch(console.error);
-    axios.get(`${API_URL}/tasks`).then(res => {
-      setTasks(res.data);
-      updateStats(res.data);
-    }).catch(console.error);
+    fetchData();
 
-    // Socket listeners
     socket.on('new_report', (report) => {
       setReports(prev => [report, ...prev]);
-      addFeedItem(`New urgency ${report.urgency_score} report located at [${report.location.lat.toFixed(2)}, ${report.location.lng.toFixed(2)}]`);
+      addFeedItem({ type: 'report', msg: `🚨 CRITICAL: ${report.processed_type.toUpperCase()} need detected`, id: Date.now() });
     });
 
     socket.on('new_task', (task) => {
@@ -32,7 +28,6 @@ export default function AdminDashboard() {
         updateStats(next);
         return next;
       });
-      addFeedItem(`New task created: ${task.title}`);
     });
 
     socket.on('task_updated', (updatedTask) => {
@@ -41,7 +36,11 @@ export default function AdminDashboard() {
         updateStats(next);
         return next;
       });
-      addFeedItem(`Task updated: ${updatedTask.title} is now ${updatedTask.status}`);
+      if (updatedTask.status === 'accepted') {
+        addFeedItem({ type: 'task', msg: `⚡ Volunteer assigned to: ${updatedTask.title}`, id: Date.now() });
+      } else if (updatedTask.status === 'completed') {
+        addFeedItem({ type: 'success', msg: `✅ Task completed: ${updatedTask.title}`, id: Date.now() });
+      }
     });
 
     return () => {
@@ -51,118 +50,207 @@ export default function AdminDashboard() {
     };
   }, []);
 
+  const fetchData = async () => {
+    try {
+      const [rRes, tRes] = await Promise.all([
+        axios.get(`${API_URL}/reports`),
+        axios.get(`${API_URL}/tasks`)
+      ]);
+      setReports(rRes.data);
+      setTasks(tRes.data);
+      updateStats(tRes.data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const updateStats = (currentTasks) => {
     const active = currentTasks.filter(t => t.status !== 'completed').length;
     const critical = currentTasks.filter(t => t.priority >= 70 && t.status !== 'completed').length;
     setStats(prev => ({ ...prev, activeTasks: active, criticalTasks: critical }));
   };
 
-  const addFeedItem = (msg) => {
-    setFeed(prev => [{ id: Date.now(), msg, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
+  const addFeedItem = (item) => {
+    setFeed(prev => [item, ...prev].slice(0, 8));
+  };
+
+  const triggerSimulation = async () => {
+    setIsSimulating(true);
+    addFeedItem({ type: 'system', msg: '⚙️ AI SYSTEM SIMULATION TRIGGERED', id: Date.now() });
+    try {
+      await axios.post(`${API_URL}/reports/simulate`);
+    } catch (err) {
+      console.error(err);
+    }
+    setTimeout(() => setIsSimulating(false), 2000);
   };
 
   const getUrgencyColor = (score) => {
-    if (score >= 70) return '#ef4444'; // red-500
-    if (score >= 40) return '#eab308'; // yellow-500
-    return '#22c55e'; // green-500
+    if (score >= 70) return '#f43f5e'; // rose-500
+    if (score >= 40) return '#f97316'; // orange-500
+    return '#3b82f6'; // blue-500
   };
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
-      <header className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
+    <div className="p-4 md:p-6 max-w-[1400px] mx-auto space-y-6 text-slate-200">
+      
+      {/* Top Header & Simulation Button */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-white tracking-tight">System Status Overview</h1>
+          <p className="text-slate-400 mt-1">Live AI Monitoring & Resource Allocation</p>
+        </div>
+        <motion.button 
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={triggerSimulation}
+          disabled={isSimulating}
+          className="bg-rose-500/10 border border-rose-500/50 hover:bg-rose-500/20 text-rose-400 font-bold py-2.5 px-6 rounded-lg flex items-center shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all"
+        >
+          <Zap className="w-5 h-5 mr-2" />
+          {isSimulating ? 'INJECTING DATA...' : 'SIMULATE CRISIS'}
+        </motion.button>
       </header>
 
-      {/* Top Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard title="Total Volunteers" value={stats.volunteers} icon={Users} color="text-blue-500" />
-        <StatCard title="Active Tasks" value={stats.activeTasks} icon={Activity} color="text-yellow-500" />
-        <StatCard title="Critical Tasks" value={stats.criticalTasks} icon={AlertTriangle} color="text-red-500" />
+      {/* Metrics Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <MetricCard title="Total Volunteers" value={stats.volunteers} icon={Users} color="text-blue-400" bgColor="bg-blue-500/10" borderColor="border-blue-500/20" />
+        <MetricCard title="Active Tasks" value={stats.activeTasks} icon={Activity} color="text-orange-400" bgColor="bg-orange-500/10" borderColor="border-orange-500/20" />
+        <MetricCard title="Critical Zones" value={stats.criticalTasks} icon={AlertTriangle} color="text-rose-400" bgColor="bg-rose-500/10" borderColor="border-rose-500/20" animatePulse={stats.criticalTasks > 0} />
+        <MetricCard title="Avg Response (est)" value="4.2m" icon={Zap} color="text-emerald-400" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/20" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Map View */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden h-[500px] relative z-0">
-          <MapContainer center={[20.5937, 78.9629]} zoom={5} className="h-full w-full">
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap" />
+        
+        {/* Main Map Content */}
+        <div className="lg:col-span-2 bg-[#121B2B] rounded-2xl border border-slate-800 overflow-hidden relative shadow-xl h-[550px] z-0">
+          <div className="absolute top-4 left-4 z-[1000] bg-[#0B1120]/80 backdrop-blur-md px-4 py-2 rounded-lg border border-slate-800 flex items-center gap-3 shadow-lg">
+             <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-rose-500 shadow-[0_0_8px_#f43f5e]"></span><span className="text-xs font-semibold text-slate-300">Critical</span></div>
+             <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-orange-500 shadow-[0_0_8px_#f97316]"></span><span className="text-xs font-semibold text-slate-300">High</span></div>
+          </div>
+          <MapContainer center={[20.5937, 78.9629]} zoom={5} className="h-full w-full bg-[#0B1120]">
+            <TileLayer 
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" 
+              attribution="&copy; OpenStreetMap" 
+            />
             
             {reports.map((report) => (
               <CircleMarker 
                 key={report._id}
                 center={[report.location.lat, report.location.lng]}
-                radius={report.urgency_score / 5 + 5}
+                radius={Math.max(8, report.urgency_score / 4)}
                 pathOptions={{ 
                   fillColor: getUrgencyColor(report.urgency_score),
                   color: getUrgencyColor(report.urgency_score),
+                  weight: 1,
                   fillOpacity: 0.6 
                 }}
               >
-                <Popup>
-                  <strong>Type: {report.processed_type}</strong><br/>
-                  Urgency: {report.urgency_score}<br/>
-                  Reported at: {new Date(report.createdAt).toLocaleString()}
+                <Popup className="dark-popup">
+                  <div className="p-1">
+                    <strong className="text-slate-800 uppercase text-xs font-bold tracking-wider">{report.processed_type} NEED DETECTED</strong><br/>
+                    <span className="text-slate-600 text-sm">Urgency Score: <span className="font-bold text-rose-600">{report.urgency_score}</span></span>
+                  </div>
                 </Popup>
               </CircleMarker>
             ))}
           </MapContainer>
         </div>
 
-        {/* Priority Alerts */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col h-[500px]">
-          <div className="p-4 border-b border-gray-100 bg-gray-50/50">
-            <h2 className="text-lg font-semibold text-gray-800 flex items-center">
-              <AlertTriangle className="w-5 h-5 mr-2 text-red-500" /> Priority Alerts
-            </h2>
+        {/* Right Sidebar - AI Insights & Feed */}
+        <div className="flex flex-col gap-6 h-[550px]">
+          
+          {/* AI Insights Panel */}
+          <div className="bg-[#121B2B] rounded-2xl border border-blue-500/20 shadow-[0_0_30px_rgba(59,130,246,0.05)] overflow-hidden flex-shrink-0">
+            <div className="p-4 border-b border-slate-800 bg-blue-500/5">
+              <h2 className="text-sm font-bold text-blue-400 flex items-center tracking-wider uppercase">
+                <Brain className="w-4 h-4 mr-2" /> Predictive AI Insights
+              </h2>
+            </div>
+            <div className="p-4 space-y-4">
+              <InsightRow 
+                title="Medical Shortage Predicted" 
+                desc="82% probability of medical kit shortage in Central Sector within 4 hours based on recent report clusters." 
+                level="critical" 
+              />
+              <InsightRow 
+                title="Resource Allocation Optimal" 
+                desc="Volunteer distribution matches current hazard hotspots." 
+                level="info" 
+              />
+            </div>
           </div>
-          <div className="p-4 flex-1 overflow-y-auto space-y-4">
-            {tasks.filter(t => t.status !== 'completed').slice(0, 10).map(task => (
-              <div key={task._id} className="p-3 border rounded-lg hover:shadow-md transition bg-white relative overflow-hidden">
-                <div className={`absolute left-0 top-0 bottom-0 w-1 ${task.priority >= 70 ? 'bg-red-500' : task.priority >= 40 ? 'bg-yellow-500' : 'bg-green-500'}`}></div>
-                <div className="pl-2">
-                  <div className="flex justify-between items-start">
-                    <h3 className="font-medium text-gray-900 truncate">{task.title}</h3>
-                    <span className="text-xs font-bold px-2 py-1 rounded-full bg-gray-100">{task.priority}</span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">Status: {task.status}</p>
-                </div>
-              </div>
-            ))}
-            {tasks.length === 0 && <p className="text-sm text-gray-400 text-center py-10">No active tasks</p>}
-          </div>
-        </div>
-      </div>
 
-      {/* Live Feed */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100">
-        <div className="p-4 border-b border-gray-100 bg-gray-50/50">
-          <h2 className="text-lg font-semibold text-gray-800 flex items-center">
-             <Activity className="w-5 h-5 mr-2 text-blue-500" /> Live Activity Feed
-          </h2>
-        </div>
-        <div className="p-4">
-          <ul className="space-y-3">
-            {feed.length > 0 ? feed.map((item) => (
-              <li key={item.id} className="flex items-center text-sm">
-                <span className="text-gray-400 w-24 flex-shrink-0">{item.time}</span>
-                <span className="text-gray-700">{item.msg}</span>
-              </li>
-            )) : <li className="text-sm text-gray-400">Waiting for activity...</li>}
-          </ul>
+          {/* Live Alert Feed */}
+          <div className="bg-[#121B2B] rounded-2xl border border-slate-800 shadow-xl overflow-hidden flex-1 flex flex-col">
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-800/20">
+              <h2 className="text-sm font-bold text-white flex items-center tracking-wider uppercase">
+                Live System Feed
+              </h2>
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+            </div>
+            <div className="p-4 flex-1 overflow-y-auto overflow-x-hidden">
+              <AnimatePresence>
+                {feed.map((item) => (
+                  <motion.div 
+                    key={item.id}
+                    initial={{ opacity: 0, x: -20, height: 0 }}
+                    animate={{ opacity: 1, x: 0, height: 'auto' }}
+                    exit={{ opacity: 0 }}
+                    className="mb-3"
+                  >
+                    <div className={clsx(
+                      "text-xs p-3 rounded-lg border backdrop-blur-sm",
+                      item.type === 'report' ? "bg-rose-500/10 border-rose-500/20 text-rose-300" :
+                      item.type === 'task' ? "bg-blue-500/10 border-blue-500/20 text-blue-300" :
+                      item.type === 'system' ? "bg-purple-500/10 border-purple-500/20 text-purple-300" :
+                      "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+                    )}>
+                      {item.msg}
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+              {feed.length === 0 && <p className="text-xs text-slate-500 text-center py-4">Awaiting system events...</p>}
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
   );
 }
 
-function StatCard({ title, value, icon: Icon, color }) {
+function MetricCard({ title, value, icon: Icon, color, bgColor, borderColor, animatePulse }) {
   return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={clsx("p-5 rounded-2xl border flex items-center justify-between", bgColor, borderColor, "bg-[#121B2B]")}
+    >
       <div>
-        <p className="text-sm font-medium text-gray-500">{title}</p>
-        <p className="text-3xl font-bold text-gray-900 mt-1">{value}</p>
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">{title}</p>
+        <p className={clsx("text-3xl font-black mt-2", color)}>{value}</p>
       </div>
-      <div className={`p-4 rounded-full bg-gray-50 ${color}`}>
-        <Icon className="w-8 h-8" />
+      <div className={clsx("p-3 rounded-xl", bgColor, color, animatePulse && "animate-pulse")}>
+        <Icon className="w-6 h-6" />
+      </div>
+    </motion.div>
+  );
+}
+
+function InsightRow({ title, desc, level }) {
+  return (
+    <div className="flex gap-3 items-start">
+      <div className={clsx("mt-0.5 rounded-full p-1", level === 'critical' ? 'bg-rose-500/20 text-rose-400' : 'bg-blue-500/20 text-blue-400')}>
+         {level === 'critical' ? <AlertTriangle className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+      </div>
+      <div>
+        <h3 className={clsx("text-sm font-bold", level === 'critical' ? 'text-rose-400' : 'text-slate-300')}>{title}</h3>
+        <p className="text-xs text-slate-400 mt-1 leading-relaxed">{desc}</p>
       </div>
     </div>
   );

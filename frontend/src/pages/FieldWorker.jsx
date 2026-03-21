@@ -1,15 +1,88 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Camera, Mic, UploadCloud, MapPin, CheckCircle } from 'lucide-react';
+import Tesseract from 'tesseract.js';
+import { Camera, Mic, UploadCloud, MapPin, CheckCircle, Loader2 } from 'lucide-react';
 
 const API_URL = 'http://localhost:8000/api';
 
 export default function FieldWorker() {
   const [inputVal, setInputVal] = useState('');
   const [status, setStatus] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const fileInputRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    // Setup Web Speech API for Voice-to-Text
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      
+      recognitionRef.current.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        setInputVal(prev => prev ? prev + ' ' + transcript : transcript);
+        setIsRecording(false);
+        setStatus('Voice captured!');
+        setTimeout(() => setStatus(''), 3000);
+      };
+      
+      recognitionRef.current.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+        setIsRecording(false);
+        setStatus('Voice recognition error.');
+      };
+      
+      recognitionRef.current.onend = () => {
+        setIsRecording(false);
+      };
+    }
+  }, []);
 
   const handleSimulateInput = (text) => {
     setInputVal(text);
+  };
+  
+  const handleImageUpload = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      setStatus('Analyzing Image (OCR)...');
+      
+      Tesseract.recognize(
+        file,
+        'eng',
+      ).then(({ data: { text } }) => {
+        const cleanText = text.trim();
+        if (cleanText) {
+          setInputVal(prev => prev ? prev + '\n[OCR]: ' + cleanText : '[OCR]: ' + cleanText);
+          setStatus('Image Analyzed!');
+        } else {
+          setStatus('No text found in image.');
+        }
+        setTimeout(() => setStatus(''), 3000);
+      }).catch(err => {
+        console.error(err);
+        setStatus('OCR Failed');
+      });
+    }
+  };
+
+  const handleRecordVoice = () => {
+    if (!recognitionRef.current) {
+      alert('Speech recognition is not supported in this browser (Try Chrome or Edge).');
+      return;
+    }
+    
+    if (isRecording) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+      setStatus('');
+    } else {
+      recognitionRef.current.start();
+      setIsRecording(true);
+      setStatus('Listening...');
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -43,22 +116,33 @@ export default function FieldWorker() {
         </div>
         
         <div className="p-6 space-y-6">
+          <input 
+            type="file" 
+            accept="image/*" 
+            capture="environment" 
+            ref={fileInputRef} 
+            onChange={handleImageUpload} 
+            className="hidden" 
+          />
           <div className="flex justify-between gap-4">
             <button 
               type="button"
-              onClick={() => handleSimulateInput('URGENT: Flood destroyed homes. Need emergency shelter and blankets immediately.')}
+              onClick={() => fileInputRef.current?.click()}
               className="flex-1 flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition"
             >
               <Camera className="w-8 h-8 text-gray-400 mb-2" />
-              <span className="text-xs font-medium text-gray-600">Scan Image (OCR)</span>
+              <span className="text-xs font-medium text-gray-600">Scan Image</span>
             </button>
             <button 
               type="button"
-              onClick={() => handleSimulateInput('Medical camp needed. 15 people showing cholera symptoms. Send doctors and clean water.')}
-              className="flex-1 flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition"
+              onClick={handleRecordVoice}
+              disabled={isRecording}
+              className={`flex-1 flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed transition ${isRecording ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'}`}
             >
-              <Mic className="w-8 h-8 text-gray-400 mb-2" />
-              <span className="text-xs font-medium text-gray-600">Record Voice</span>
+              <Mic className={`w-8 h-8 mb-2 ${isRecording ? 'text-red-500 animate-pulse' : 'text-gray-400'}`} />
+              <span className={`text-xs font-medium ${isRecording ? 'text-red-600' : 'text-gray-600'}`}>
+                {isRecording ? 'Recording...' : 'Record Voice'}
+              </span>
             </button>
           </div>
 

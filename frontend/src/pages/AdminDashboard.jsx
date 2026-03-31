@@ -4,8 +4,9 @@ import { socket } from '../utils/socket';
 import { Activity, Users, AlertTriangle, Brain, Zap } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
+import clsx from 'clsx';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function AdminDashboard() {
   const [reports, setReports] = useState([]);

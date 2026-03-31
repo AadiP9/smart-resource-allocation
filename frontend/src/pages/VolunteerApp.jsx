@@ -5,7 +5,7 @@ import { MapPin, Navigation, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function VolunteerApp() {
   const [tasks, setTasks] = useState([]);

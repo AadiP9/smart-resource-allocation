@@ -83,6 +83,9 @@ backend/.env
 frontend/.env
 frontend/.env.local
 
+# Google Cloud service account key — NEVER commit this
+gcloud-key.json
+
 # parcel-bundler cache
 .cache
 .parcel-cache

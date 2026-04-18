@@ -1,116 +1,175 @@
+'use strict';
 const express = require('express');
+const multer = require('multer');
+const vision = require('@google-cloud/vision');
+const speech = require('@google-cloud/speech');
 const router = express.Router();
+
 const Report = require('../models/Report');
 const Task = require('../models/Task');
+const { analyzeWithGemini } = require('../services/geminiService');
 
-// Simulated AI Processing functions
-function simulateAI(raw_input) {
-  const inputLower = raw_input.toLowerCase();
-  
-  // Simulated NLP extraction
-  let processed_type = 'general';
-  if (inputLower.includes('medical') || inputLower.includes('blood') || inputLower.includes('injured')) {
-    processed_type = 'medical';
-  } else if (inputLower.includes('food') || inputLower.includes('hunger') || inputLower.includes('starving')) {
-    processed_type = 'food';
-  } else if (inputLower.includes('shelter') || inputLower.includes('tent') || inputLower.includes('homeless')) {
-    processed_type = 'shelter';
-  } else if (inputLower.includes('rescue')) {
-    processed_type = 'rescue';
-  }
+// Multer — store uploads in memory (no disk write needed)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-  // Simulated Priority Engine
-  let urgency_score = 10; // base score
-  
-  if (processed_type === 'medical' || processed_type === 'rescue') {
-    urgency_score += 60; // 70 total
-  } else if (processed_type === 'food') {
-    urgency_score += 40; // 50 total
-  } else if (processed_type === 'shelter') {
-    urgency_score += 30; // 40 total
-  }
+// Google Cloud clients — credentials loaded via GOOGLE_APPLICATION_CREDENTIALS env var
+const visionClient = new vision.ImageAnnotatorClient();
+const speechClient = new speech.SpeechClient();
 
-  // Add random variance (+/- 10) to make it look dynamic
-  urgency_score += Math.floor(Math.random() * 20) - 10;
-  
-  // Cap between 0 and 100
-  urgency_score = Math.max(0, Math.min(100, urgency_score));
-
-  return { processed_type, urgency_score };
+// ---------------------------------------------------------------------------
+// Helper: build GeoJSON coordinates from lat/lng numbers
+// ---------------------------------------------------------------------------
+function toGeoJSON(lat, lng) {
+  return { type: 'Point', coordinates: [parseFloat(lng), parseFloat(lat)] };
 }
 
+// ---------------------------------------------------------------------------
+// POST /api/reports
+// Accepts raw text + location, runs Gemini NLP, creates Report + Task
+// ---------------------------------------------------------------------------
 router.post('/', async (req, res) => {
   const io = req.app.get('io');
   try {
     const { raw_input, location } = req.body;
-    
-    // Simulate AI extraction and scoring
-    const { processed_type, urgency_score } = simulateAI(raw_input);
+    if (!raw_input || !location?.lat || !location?.lng) {
+      return res.status(400).json({ error: 'raw_input and location (lat, lng) are required.' });
+    }
 
-    const report = new Report({ raw_input, processed_type, urgency_score, location });
-    await report.save();
+    const { processed_type, urgency_score, reasoning } = await analyzeWithGemini(raw_input);
 
-    // Automatically create a Task derived from this report
-    const taskTitle = `Need ${processed_type} at location`;
-    const task = new Task({
-      title: taskTitle,
+    const geoLocation = toGeoJSON(location.lat, location.lng);
+
+    const report = await Report.create({ raw_input, processed_type, urgency_score, reasoning, location: geoLocation });
+
+    const task = await Task.create({
+      title: `${processed_type.toUpperCase()} need detected`,
       type: processed_type,
       priority: urgency_score,
-      location: location,
-      status: 'pending'
+      required_skill: processed_type === 'medical' ? 'first-aid' : '',
+      location: geoLocation,
+      status: 'pending',
     });
-    await task.save();
 
-    // Fire real-time events to dashboard and volunteers
+    // Phase 3: named events
     io.emit('new_report', report);
-    io.emit('new_task', task);
+    io.emit('task_created', task);
 
     res.status(201).json({ message: 'Report processed successfully', report, task });
   } catch (error) {
+    console.error('[POST /reports]', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/reports/ocr
+// Accepts a multipart image, runs Google Cloud Vision OCR, returns extracted text
+// ---------------------------------------------------------------------------
+router.post('/ocr', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No image file provided.' });
+
+    const [result] = await visionClient.textDetection({ image: { content: req.file.buffer } });
+    const detections = result.textAnnotations;
+    const text = detections && detections.length > 0 ? detections[0].description.trim() : '';
+
+    res.json({ text });
+  } catch (error) {
+    console.error('[POST /reports/ocr]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/reports/transcribe
+// Accepts a multipart audio file (webm/ogg/wav), runs Cloud Speech-to-Text
+// ---------------------------------------------------------------------------
+router.post('/transcribe', upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No audio file provided.' });
+
+    const audioBytes = req.file.buffer.toString('base64');
+
+    // Detect encoding from mimetype
+    const mimeToEncoding = {
+      'audio/webm': 'WEBM_OPUS',
+      'audio/ogg': 'OGG_OPUS',
+      'audio/wav': 'LINEAR16',
+      'audio/x-wav': 'LINEAR16',
+    };
+    const encoding = mimeToEncoding[req.file.mimetype] || 'WEBM_OPUS';
+
+    const [response] = await speechClient.recognize({
+      audio: { content: audioBytes },
+      config: { encoding, sampleRateHertz: 48000, languageCode: 'en-IN' },
+    });
+
+    const transcript = response.results
+      .map((r) => r.alternatives[0]?.transcript || '')
+      .join(' ')
+      .trim();
+
+    res.json({ transcript });
+  } catch (error) {
+    console.error('[POST /reports/transcribe]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/reports/simulate
+// Injects realistic dummy crisis events (uses Gemini NLP)
+// ---------------------------------------------------------------------------
 router.post('/simulate', async (req, res) => {
   const io = req.app.get('io');
   try {
-    const dummyReports = [
-      { raw_input: "Massive earthquake damage, thousands trapped. Need medical and rescue teams instantly!!", loc: { lat: 21.0, lng: 78.5 } },
-      { raw_input: "Heavy floods washed away houses. At least 50 families needing food and shelter.", loc: { lat: 19.5, lng: 77.2 } },
-      { raw_input: "Fire spreading rapidly in sector 4. Medical supplies running out.", loc: { lat: 22.8, lng: 79.1 } },
-      { raw_input: "Building collapse. Multiple casualties. Need urgent rescue and medical.", loc: { lat: 20.1, lng: 79.9 } }
+    const scenarios = [
+      { text: 'Massive earthquake damage, thousands trapped. Need medical and rescue teams instantly!', lat: 21.0, lng: 78.5 },
+      { text: 'Heavy floods washed away houses. 50 families need food and shelter urgently.', lat: 19.5, lng: 77.2 },
+      { text: 'Fire spreading rapidly in sector 4. Medical supplies running out.', lat: 22.8, lng: 79.1 },
+      { text: 'Building collapse. Multiple casualties. Need urgent rescue and medical response.', lat: 20.1, lng: 79.9 },
     ];
 
-    const createdTasks = [];
+    const created = [];
+    for (const s of scenarios) {
+      const { processed_type, urgency_score, reasoning } = await analyzeWithGemini(s.text);
+      const geoLocation = toGeoJSON(s.lat, s.lng);
 
-    for (let data of dummyReports) {
-      const { processed_type, urgency_score } = simulateAI(data.raw_input);
-      const report = new Report({ raw_input: data.raw_input, processed_type, urgency_score, location: data.loc });
-      await report.save();
+      const report = await Report.create({
+        raw_input: s.text,
+        processed_type,
+        urgency_score: Math.min(100, urgency_score + 10), // bump for simulation drama
+        reasoning,
+        location: geoLocation,
+      });
 
-      const task = new Task({
+      const task = await Task.create({
         title: `CRITICAL: ${processed_type.toUpperCase()} CRISIS`,
         type: processed_type,
-        priority: urgency_score > 90 ? urgency_score : urgency_score + 20, // ensure they are critical
-        location: data.loc,
-        status: 'pending'
+        priority: Math.min(100, urgency_score + 10),
+        required_skill: processed_type === 'medical' || processed_type === 'rescue' ? 'first-aid' : '',
+        location: geoLocation,
+        status: 'pending',
       });
-      await task.save();
 
       io.emit('new_report', report);
-      io.emit('new_task', task);
-      createdTasks.push(task);
+      io.emit('task_created', task);
+      created.push(task);
     }
 
-    res.status(201).json({ message: 'Simulation triggered', tasks: createdTasks });
+    res.status(201).json({ message: 'Simulation triggered', tasks: created });
   } catch (error) {
+    console.error('[POST /reports/simulate]', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/reports
+// ---------------------------------------------------------------------------
 router.get('/', async (req, res) => {
   try {
-    const reports = await Report.find().sort({ createdAt: -1 });
+    const reports = await Report.find().sort({ createdAt: -1 }).lean();
     res.json(reports);
   } catch (error) {
     res.status(500).json({ error: error.message });

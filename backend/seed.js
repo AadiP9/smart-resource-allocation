@@ -1,61 +1,85 @@
+'use strict';
+// Seed script — clears existing data and inserts GeoJSON-compatible demo records
+require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('./models/User');
 const Task = require('./models/Task');
 const Report = require('./models/Report');
 
-const MONGO_URI = 'mongodb://127.0.0.1:27017/sras';
+const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI)
   .then(async () => {
-    console.log('Connected to MongoDB. Starting seed...');
-    await clearData();
-    await seedData();
-    console.log('Seeding complete!');
+    console.log('[Seed] Connected to MongoDB.');
+    await Promise.all([User.deleteMany({}), Task.deleteMany({}), Report.deleteMany({})]);
+    console.log('[Seed] Cleared existing documents.');
+    await seed();
+    console.log('[Seed] Done.');
     process.exit(0);
   })
-  .catch(err => {
-    console.error('Connection error:', err);
-    process.exit(1);
-  });
+  .catch((err) => { console.error('[Seed] Connection error:', err); process.exit(1); });
 
-async function clearData() {
-  await User.deleteMany({});
-  await Task.deleteMany({});
-  await Report.deleteMany({});
-  console.log('Cleared existing data.');
-}
+// GeoJSON helper: [longitude, latitude]
+const geo = (lat, lng) => ({ type: 'Point', coordinates: [lng, lat] });
 
-async function seedData() {
-  // Create Admins and Volunteers
-  const volunteer1 = await User.create({ name: 'Rahul Singer', role: 'volunteer', skills: ['driving', 'first-aid'], location: { lat: 20.0, lng: 78.0 } });
-  const admin = await User.create({ name: 'Admin User', role: 'admin', location: { lat: 20.0, lng: 78.0 } });
+async function seed() {
+  // --- Users ---
+  const [volunteer1, volunteer2, volunteer3] = await User.insertMany([
+    { name: 'Rahul Singh',   role: 'volunteer', skills: ['first-aid', 'driving'],  available: true, location: geo(20.5, 78.8) },
+    { name: 'Priya Sharma',  role: 'volunteer', skills: ['first-aid', 'medicine'], available: true, location: geo(21.2, 79.3) },
+    { name: 'Amit Verma',    role: 'volunteer', skills: ['logistics', 'driving'],  available: true, location: geo(19.8, 77.5) },
+    { name: 'Field Worker 1',role: 'field_worker', skills: [], available: true, location: geo(20.0, 78.0) },
+    { name: 'Admin User',    role: 'admin',     skills: [], available: true, location: geo(20.5, 78.9) },
+  ]);
+  console.log('[Seed] Users created.');
 
-  // Create Reports
-  const report1 = await Report.create({ 
-    raw_input: 'Flood waters rising, 5 families trapped. Need boats and emergency shelter.', 
-    processed_type: 'rescue', 
-    urgency_score: 95, 
-    location: { lat: 21.5, lng: 79.2 }
-  });
+  // --- Reports ---
+  await Report.insertMany([
+    {
+      raw_input: 'Flood waters rising, 5 families trapped. Need boats and emergency shelter.',
+      processed_type: 'rescue', urgency_score: 92,
+      reasoning: 'Rescue situation with trapped persons — highest priority.',
+      location: geo(21.5, 79.2),
+    },
+    {
+      raw_input: 'Running low on food supplies for 50 people after landslide.',
+      processed_type: 'food', urgency_score: 55,
+      reasoning: 'Food shortage post-disaster — medium priority.',
+      location: geo(19.8, 77.5),
+    },
+    {
+      raw_input: 'Cholera outbreak reported. Need medical supplies and doctors immediately.',
+      processed_type: 'medical', urgency_score: 88,
+      reasoning: 'Disease outbreak with immediate health risk — high priority.',
+      location: geo(22.1, 80.0),
+    },
+  ]);
+  console.log('[Seed] Reports created.');
 
-  const report2 = await Report.create({ 
-    raw_input: 'Running low on food supplies for 50 people.', 
-    processed_type: 'food', 
-    urgency_score: 55, 
-    location: { lat: 19.8, lng: 77.5 }
-  });
-
-  const report3 = await Report.create({ 
-    raw_input: 'Cholera outbreak, need medical supplies and doctors instantly.', 
-    processed_type: 'medical', 
-    urgency_score: 85, 
-    location: { lat: 22.1, lng: 80.0 }
-  });
-
-  // Create corresponding Tasks
-  await Task.create({ title: 'Rescue Mission: Flood Trap', type: 'rescue', priority: 95, location: { lat: 21.5, lng: 79.2 }, status: 'pending' });
-  await Task.create({ title: 'Deliver Food Supplies', type: 'food', priority: 55, location: { lat: 19.8, lng: 77.5 }, status: 'pending' });
-  await Task.create({ title: 'Medical Emergency Camp', type: 'medical', priority: 85, location: { lat: 22.1, lng: 80.0 }, status: 'in_progress', assigned_volunteer: volunteer1._id });
-
-  console.log('Created dummy Reports, Tasks, and Users.');
+  // --- Tasks ---
+  await Task.insertMany([
+    {
+      title: 'Rescue Mission: Flood Trap',
+      type: 'rescue', priority: 92,
+      required_skill: 'first-aid',
+      location: geo(21.5, 79.2),
+      status: 'pending',
+    },
+    {
+      title: 'Deliver Food Supplies',
+      type: 'food', priority: 55,
+      required_skill: 'logistics',
+      location: geo(19.8, 77.5),
+      status: 'pending',
+    },
+    {
+      title: 'Medical Emergency Camp',
+      type: 'medical', priority: 88,
+      required_skill: 'first-aid',
+      location: geo(22.1, 80.0),
+      status: 'in_progress',
+      assigned_volunteer: volunteer2._id,
+    },
+  ]);
+  console.log('[Seed] Tasks created.');
 }
